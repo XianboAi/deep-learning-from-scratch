@@ -765,10 +765,6 @@ batch相较于train的关系就是train相较于整体分布的关系（test只�
 
 ![image-20251109232514683](./assets/image-20251109232514683.png)
 
-
-
-
-
 计划：对比torch
 
 
@@ -791,4 +787,219 @@ bug：训练特别慢（相较于正常）
 
 ![image-20251114183807602](./assets/image-20251114183807602.png)
 
-为什么初始参数对于收敛速度影响这么大？
+为什么初始参数对于收敛速度影响这么大？见6.2
+
+## 第6章 与学习相关的技巧
+
+### 6.1 参数的更新
+
+#### SGD
+
+```python
+class SGD:
+    def __init__(self, lr=0.01) -> None:
+        self.lr = lr
+
+    def update(self, params, grads):
+        for key in params.keys():
+            params[key] -= self.lr * grads[key]
+```
+
+#### Momentum
+
+```python
+class Momentum:
+    def __init__(self, lr=0.01, momentum=0.9) -> None:
+        self.lr = lr
+        self.momentum=momentum
+        self.v = None
+
+    def update(self, params, grads):
+        if self.v == None:
+            self.v = {}
+            for key, val in params.items():
+                self.v =[key] = np.zeros_like(val)
+                
+        for key in params.key():
+            self.v[key] = self.momentum * self.v[key] - self.lr * grads[key]
+            params[key] += self.v[key]
+```
+
+梯度起到加速度的作用
+
+#### AdaGrad
+
+为什么要累计所有历史梯度的和？这样不是越学越慢吗？
+
+我认为当前的学习率之应该取决于当前（或临近）的信息，而与历史无关。
+
+考虑一种策略：只记录最近几次的梯度情况，梯度越大学习率就越小，或是与Momentum结合，v越大学习率越小。
+
+从这个角度理解的话，可将lr视为时间尺度，即需要重新调整方向的频率。
+
+v负责调整方向，而lr决定每次调整完走多远，或每隔多久重新调整一次。
+
+```python
+class AdaGrad:
+    def __init__(self, lr=0.01) -> None:
+        self.lr = lr
+        self.h = None
+
+    def update(self, params, grads):
+        if self.h == None:
+            self.h = {}
+            for key, val in params.item():
+                self.h[key] = np.zeros_like(val)
+
+        for key in params.key():
+            self.h[key] += np.square(grads[key])
+            params[key] -= self.lr * grads[key] / np.sqrt(self.h[key] + 1e-7)
+```
+
+为什么要先平方再开方？
+
+平方是为了消除负数
+
+开方是为了防止梯度衰减过快
+
+#### Adam
+
+书中未详解，具体可直接查阅原文。
+
+### 6.2 权重的初始值
+
+coding...
+
+![image-20251130163326146](./assets/image-20251130163326146.png)
+
+### 6.3 Batch Normalization
+
+为什么batch normal会是有效的？
+
+是否使用了batch normal就没必要初始化权重系数了？
+
+为什么使用了batch normal后反而weight_init_std=1变成效果最好了？（实验结果见code）
+
+![image-20251130163339689](./assets/image-20251130163339689.png)
+
+### 6.4 正则化
+
+#### 过拟合
+
+将 `train_size` 从60000减小至600，可见 `train_acc` 很快收敛至100%，而 `test_acc` 最终收敛至80%左右。（实验结果见code）
+
+![image-20251130163300061](./assets/image-20251130163300061.png)
+
+额外发现，将 `train_size` 减小至600后，运行时间从20s增加至2min，经过研究发现，是由于绿色部分占用了大部分时间，将其注释掉后提升至15s。
+
+<img src="./assets/image-20251130162538682.png" alt="image-20251130162538682" style="zoom:50%;" />
+
+#### L1正则化
+
+```python
+class Affine:
+    def __init__(self, W, b, weight_decay=0) -> None:  # 增加权值衰减系数
+        self.W = W
+        self.b = b
+        self.weight_decay = weight_decay
+
+        self.x = np.array([])
+
+        self.dW = None
+        self.db = None
+
+    def forward(self, x):
+        self.x = x
+
+        out = np.dot(x, self.W) + self.b
+
+        return out
+
+    def backward(self, dout):
+        self.db = np.sum(dout, axis=0)
+        self.dW = np.dot(self.x.T, dout) + self.weight_decay * self.W  # 增加L2loss
+
+        dx = np.dot(dout, self.W.T)
+
+        return dx
+```
+
+![image-20251130165313239](./assets/image-20251130165313239.png)
+
+对比过拟合的实验结果发现， `test_acc` 并没有变好，反而 `train_acc` 变差了，这是为什么？
+
+本来以为是 `weight_decay` 的问题，然后做了对照实现
+
+![image-20251130175201304](./assets/image-20251130175201304.png)
+
+发现训练更平滑了，但是过拟合问题并没有解决。
+
+初步判断是因为 `train_set` 实在是太小了，根本无法学习到 `test_set` 的真实分布，所以是数据分布噪声的问题，不是过拟合的问题。
+
+如果是过拟合的问题，应该会出现 `test_acc` 降低的情况，但是图中 `test_acc` 只是收敛，并没有下降。
+
+
+
+形如 `dropdout_ratio` `weight_decay` 这样的参数，应该在 `class Net` 中设置默认参数还是应该在 `class Layer` 中设置默认参数？
+
+#### Dropout
+
+```python
+class Dropout:
+    def __init__(self, dropout_ratio=0) -> None:
+        self.dropout_ratio = dropout_ratio
+        self.mask = None  # 这里有点像relu
+
+    def forward(self, x, train_flag):  # 需要区分训练和预测，只有训练时需要dropout  # 需要给所有层都加上
+        if train_flag:
+            self.mask = np.random.rand(*x.shape) > self.dropout_ratio  # 记得解包s.shape
+            out = x * self.mask
+        else:
+            out = x * (1 - self.dropout_ratio)  # 注意这里不是直接返回x，而是要取平均
+        
+        return out
+
+    def backward(self, dout):
+        dx = dout * self.mask
+
+        return dx
+```
+
+看起来结果并不是很好啊， 不过 `train_acc` 和 `test_acc` 确实更接近了（书中结果类似）。
+
+猜测原因与L1正则化相同，因为这个例子根本就无法体现*“过拟合”*。
+
+![image-20251130185225456](./assets/image-20251130185225456.png)
+
+> 集成学习与 Dropout有密切的关系。这是因为可以将 Dropout理解为，通过在学习过程中随机删除神经元，从而每一次都让不同的模型进行学习。并且，推理时，通过对神经元的输出乘以删除比例（比如，0.5等），可以取得模型的平均值。也就是说，可以理解成。Dropout将集成学习的效果（模拟地）通过一个网络实现了。
+
+### 6.5 超参数的验证
+
+步骤**0**
+
+设定超参数的范围。
+
+步骤**1**
+
+从设定的超参数范围中随机采样。
+
+步骤**2**
+
+使用步骤1中采样到的超参数的值进行学习，通过验证数据评估识别精度（但是要将epoch设置得很小）。
+
+步骤**3**
+
+重复步骤1和步骤2（100次等），根据它们的识别精度的结果，缩小超参数的范围。
+
+
+
+随机选择 ＞ 网格搜索
+
+### 6.6 总结
+
+- 参 数 的 更 新 方 法，除 了 SGD 之 外，还 有 Momentum、AdaGrad、Adam等方法。
+- 权重初始值的赋值方法对进行正确的学习非常重要。
+- 作为权重初始值，Xavier初始值、He初始值等比较有效。
+- 通过使用Batch Normalization，可以加速学习，并且对初始值变得健壮。
+- 抑制过拟合的正则化技术有权值衰减、Dropout等。
+- 逐渐缩小“好值”存在的范围是搜索超参数的一个有效方法。
