@@ -995,7 +995,7 @@ class Dropout:
 
 随机选择 ＞ 网格搜索
 
-### 6.6 总结
+### 6.6 小结
 
 - 参 数 的 更 新 方 法，除 了 SGD 之 外，还 有 Momentum、AdaGrad、Adam等方法。
 - 权重初始值的赋值方法对进行正确的学习非常重要。
@@ -1003,3 +1003,214 @@ class Dropout:
 - 通过使用Batch Normalization，可以加速学习，并且对初始值变得健壮。
 - 抑制过拟合的正则化技术有权值衰减、Dropout等。
 - 逐渐缩小“好值”存在的范围是搜索超参数的一个有效方法。
+
+## 第7章 卷积神经网络
+
+### 7.1 整体结构
+
+卷积层（Convolution层）
+
+池化层（Pooling层）
+
+- [ ] 为什么ReLU在卷积层和池化层中间？
+
+### 7.2 卷积层
+
+- [ ] 为什么偏置是标量？全连接层的偏执不是和输出形状相同吗？
+
+- [ ] 滤波器数量不就等价于全连接层的神经元数量吗？为什么神经元数量是写在最后一维？
+
+### 7.3 池化层
+
+- [ ] 池化层的作用是增强鲁棒性？
+
+### 7.4 卷积层和池化层的实现
+
+`im2col`  “image to collumn”  从图像到矩阵
+
+```python
+def im2col (input_data, filter_h, filter_w, stride=1, pad=0):  # 先实现一个不支持stride和pad的版本
+    batch_size, channels, height, width = input_data.shape
+
+    out_h = height - filter_h + 1
+    out_w = width - filter_w + 1
+
+    col = np.zeros((batch_size, channels, out_h, out_w, filter_h, filter_w))
+
+    for h in range(out_h):
+        for w in range(out_w):
+            col[:, :, h, w, :, :] = input_data[:, :, h:h + filter_h, w:w + filter_w]
+    
+    col = col.reshape(batch_size * channels * out_h * out_w, filter_h * filter_w)
+
+    return col
+```
+
+- [ ] 自己实现的版本，换一个视角看，好像可以优化成卷积核大小的循环？
+
+- [ ] 输出数据比输入数据多几维就需要基层循环？
+
+- [ ] 每个卷积核大小就代表原图中每个像素需要复制的次数？
+
+- [ ] 所以如果卷积核大小是3 * 3，那只需要 `for i in range(3): for j in range(3)` ？
+
+
+
+使用 `im2col` 展开输入数据后，之后就只需将卷积层的滤波器（权重）纵向展开为1列，并计算2个矩阵的乘积即可（如图）。这和全连接层的Affine层进行的处理基本相同。
+
+<img src="./assets/image-20251202221532369.png" alt="image-20251202221532369" style="zoom:80%;" />
+
+#### 卷积层
+
+```python
+class Convolution:  # 目前只支持stride pad采用默认参数
+    def __init__(self, W, b, stride=1, pad=0) -> None:
+        self.W = W
+        self.b = b
+        self.stride = stride
+        self.pad = pad
+
+    def forward(self, x):
+        N, C, H, W = x.shape  # N = batch_size
+        FN, C, FH, FW = self.W.shape  # FN是滤波器数量，对应输出的通道数
+        # 这两个通道数相同
+
+        col = im2col(x, FH, FW, stride=1, pad=0)
+        col_W = self.W.reshape(FN, C * FH * FW).T  # 第0维变成 N * out_h * out_w  # .T和strnapose(1, 0)等价
+        out = np.dot(col, col_W) + self.b
+
+        out_h = H - FH + 1  # 只支持stride=1, pad=0
+        out_w = W - FW + 1
+        out = out.reshape(N, out_h, out_w, FW).transpose(0, 3, 1, 2)  # 通道数可类比为Affine层中的参数维度
+
+        return out
+```
+
+#### 池化层
+
+```python
+class  Pooling:
+    def __init__(self, pool_h, pool_w, stride=1, pad=0) -> None:
+        self.pool_h = pool_h  # 卷积层直接传W，而W就包含了FN, C, FH, FW这几个参数，池化层没有参数，只需要传形状h, w
+        self.pool_w = pool_w
+        self.stride = stride
+        self.pad = pad
+
+    def forward(self, x):
+        N, C, H, W = x.shape
+
+        col = im2col(x, self.pool_h, self.pool_w, stride=1, pad=0)  # 这里通道数还在1维，需要把通道数放到0维
+        col = col.reshape(-1, self.pool_h * self.pool_w)
+
+        out = np.max(col, axis=1)
+        
+        out_h = H - self.pool_h + 1  # 只支持stride=1, pad=0
+        out_w = W - self.pool_w + 1
+        out = out.reshape(N, out_h, out_w, C).transpose(0, 3, 1, 2)
+
+        return out
+```
+
+池化层和卷积层的区别就在于通道数的处理方式不同。
+
+### 7.5 CNN的实现
+
+- [ ] 为什么是 `Conv` → `ReLU` → `Pooling` 的顺序？
+- [ ] 为什么只使用1层卷积层？只提取一次特征？那不是只能提取卷积核大小的特征？那还是只有局部信息呀？
+
+<img src="./assets/image-20251203154833509.png" alt="image-20251203154833509" style="zoom: 80%;" />
+
+```python
+class SimpleConvNet:
+    def __init__(self,
+                 input_dim=(1, 28, 28),
+                 conv_param={'filter_num':30, 'filter_size':5, 'pad':0, 'stride':1},
+                 hidden_size=100,
+                 output_size=10,
+                 weight_init_std=0.01) -> None:
+        
+        filter_num = conv_param['filter_num']
+        filter_size = conv_param['filter_size']
+        filter_pad = conv_param['pad']
+        filter_stride = conv_param['stride']
+        input_size = input_dim[1]
+        conv_output_size = input_size - filter_size + 1
+        pool_output_size = conv_output_size - 2 + 1 # 默认池化层大小为2 * 2，步长为1
+
+        self.params = {}
+        self.params['W1'] = weight_init_std * np.random.randn(filter_num, input_dim[0], filter_size, filter_size)
+        self.params['b1'] = np.zeros(filter_num)
+        self.params['W2'] = weight_init_std * np.random.randn(filter_num * pool_output_size * pool_output_size, hidden_size)
+        self.params['b2'] = np.zeros(hidden_size)
+        self.params['W3'] = weight_init_std * np.random.randn(hidden_size, output_size)
+        self.params['b3'] = np.zeros(output_size)
+
+        self.layers = OrderedDict()
+        self.layers['Conv1'] = Convolution(self.params['W1'], self.params['b1'], self.params['stride'], self.params['pad'])
+        self.layers['Relu1'] = Relu()
+        self.layers['Pool1'] = Pooling(pool_h=2, pool_w=2)
+        self.layers['Affine1'] = Affine(self.params['W2'], self.params['b2'])
+        self.layers['Relu2'] = Relu()
+        self.layers['Affine2'] = Affine(self.params['W3'], self.params['b3'])
+        
+        self.last_layer = SoftmaxWithLoss()
+    
+    def predict(self, x):
+        for layer in self.layers.values():
+            x = layer.forward(x)
+            return x
+        
+    def loss(self, x, t):
+            y = self.predict(x)
+            return self.last_layer.forward(y, t)
+        
+    def gradient(self, x, t):
+        self.loss(x, t)
+
+        dout = 1
+        dout = self.last_layer.backward(dout)
+
+        layers = list(self.layers.values())
+        layers.reverse()
+
+        for layer in layers:
+             dout = layer.backward(dout)
+        
+        grads = {}
+        grads['W1'] = self.layers['Conv1'].dW
+        grads['b1'] = self.layers['Conv1'].db
+        grads['W2'] = self.layers['Affine1'].dW
+        grads['b2'] = self.layers['Affine1'].db
+        grads['W3'] = self.layers['Affine2'].dW
+        grads['b3'] = self.layers['Affine2'].db
+
+        return grads
+```
+
+### 7.6 CNN的可视化
+
+
+
+![image-20251203164053418](./assets/image-20251203164053418.png)
+
+左半部分为白色、右半部分为黑色的滤波器的情况下，会对垂直方向上的边缘有响应。
+
+![image-20251203164222457](./assets/image-20251203164222457.png)
+
+CNN的卷积层中提取的信息。第1层的神经元对边缘或斑块有响应，第3层对纹理有响应，第5层对物体部件有响应，最后的全连接层对物体的类别（狗或车）有响应。
+
+![image-20251203164253296](./assets/image-20251203164253296.png)
+
+### 7.7 具有代表性的CNN
+
+#### LeNet
+
+#### AlexNet
+
+### 7.8 小结
+
+- CNN在此前的全连接层的网络中新增了卷积层和池化层。
+- 使用im2col函数可以简单、高效地实现卷积层和池化层。
+- 通过CNN的可视化，可知随着层次变深，提取的信息愈加高级。
+- LeNet和AlexNet是CNN的代表性网络。
+- 在深度学习的发展中，大数据和GPU做出了很大的贡献。
